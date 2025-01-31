@@ -1,0 +1,603 @@
+{% extends 'services/base_generic.html' %} {% block content %}
+<title>Calculate Amount</title>
+<link
+  href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.2/dist/css/bootstrap.min.css"
+  rel="stylesheet"
+  integrity="sha384-EVSTQN3/azprG1Anm3QDgpJLIm9Nao0Yz1ztcQTwFspd3yD65VohhpuuCOmLASjC"
+  crossorigin="anonymous"
+/>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+  // Start of the basic logic of the page.
+  function calculateAmount(serviceId, rateData) {
+    const quantityInput = document.getElementById(`quantity_${serviceId}`);
+    const amountDisplay = document.getElementById(`amount_${serviceId}`);
+    const quantity = parseInt(quantityInput.value);
+
+    if (isNaN(quantity) || quantity <= 0) {
+      amountDisplay.innerText = "Invalid quantity";
+      return;
+    }
+
+    const rates = JSON.parse(rateData);
+    let rate = null;
+
+    for (const r of rates) {
+      if (quantity >= r.min_quantity && quantity <= r.max_quantity) {
+        rate = r.rate;
+        break;
+      }
+    }
+
+    if (rate !== null) {
+      const amount = Math.floor(quantity * rate);
+      amountDisplay.innerText = `${amount}`;
+    } else {
+      amountDisplay.innerText = "No rate available";
+    }
+    updateTotalAmount();
+  }
+
+  function updateTotalAmount() {
+    let totalAmount = 0;
+    const amountElements = document.querySelectorAll('[id^="amount_"]');
+
+    amountElements.forEach((element) => {
+      const amountText = element.innerText;
+      const amount = parseFloat(amountText);
+      if (!isNaN(amount)) {
+        totalAmount += amount;
+      }
+    });
+
+    document.getElementById("total_amount").innerText = `${totalAmount}`;
+  }
+
+  function addToCart() {
+    const services = [];
+    document.querySelectorAll('[id^="quantity_"]').forEach((input) => {
+      const serviceId = input.id.split('_')[1];
+      const quantity = parseInt(input.value);
+      if (!isNaN(quantity) && quantity > 0) {
+        const amount = parseFloat(document.getElementById(`amount_${serviceId}`).innerText);
+        services.push({ serviceId, quantity, amount });
+      }
+      
+    });
+    localStorage.setItem('cart', JSON.stringify(services));
+    window.location.href = "{% url 'cart' %}";
+  }
+
+
+  // The below function I've made to restrict all the input type numbers to get any special character if a user types any number - Himanshu.
+function restrictSpecialCharacters(input) {
+    input.addEventListener('input', function (e) {
+        const value = e.target.value;
+
+        // Remove any non-numeric characters
+        e.target.value = value.replace(/\D/g, '');
+    });
+}
+
+// Apply the restriction to all number inputs
+document.addEventListener('DOMContentLoaded', function () {
+    const numberInputs = document.querySelectorAll('input[type="number"]');
+    numberInputs.forEach(input => {
+        restrictSpecialCharacters(input);
+    });
+});
+
+// End of the basic logic logic of the page.
+
+// This is the logic for the topup payment section.
+
+function applyPromocode() {
+    const promoCode = document.getElementById("promocode").value.toUpperCase();
+    let creditbalance = 0;
+    const topup_amount = parseFloat(document.getElementById("topup_amount").value);
+    if (promoCode === "XRAI10") {
+        creditbalance = topup_amount * 0.1;
+        const grandTotal = topup_amount + creditbalance;
+        document.getElementById("creditbalance").innerText = `${creditbalance}`;
+        document.getElementById("total_balance").innerText = `${grandTotal}`;
+        document.getElementById("promocode").style.color = "green";
+    } else {
+        document.getElementById("creditbalance").innerText = "0";
+        document.getElementById("total_balance").innerText = `${topup_amount}`;
+        document.getElementById("promocode").style.color = "red";
+    }
+    validateTopupAmount(); // Call validate function to ensure the button state is updated
+}
+
+  // Logic for the razorpay payment.
+
+  document.addEventListener('DOMContentLoaded', function() {
+
+    // Handle form submission
+    document.getElementById('pay-button').addEventListener('click', function(event) {
+        event.preventDefault();
+        checkProfileCompletion();
+    });
+});
+
+// Function to fetch user details
+// function fetchUserDetails() {
+//     fetch('/user/details/')
+//         .then(response => response.json())
+//         .then(data => {
+//             if (data.success) {
+//                 document.getElementById('username').value = data.user.username;
+//                 document.getElementById('organization').value = data.user.organization;
+//                 document.getElementById('email').value = data.user.email;
+//                 // document.getElementById('contact').value = data.user.contact;
+//                 document.getElementById('topup_amount').value = data.user.amount;
+//             } else {
+//                 console.error('Failed to fetch user details');
+//             }
+//         })
+//         .catch(error => console.error('Error:', error));
+// }
+
+function checkProfileCompletion() {
+    fetch("{% url 'check_profile_completion' %}")
+    .then(response => response.json())
+        .then(data => {
+            if (data.profile_complete) {
+                createRazorpayOrder();
+            } else {
+                alert("Your Profile is not completed yet! \n Fill in the following details to continue.");
+                closePopup();
+                document.getElementById('update-profile-container').style.display = 'block';
+            }
+        })
+        .catch(error => console.error('Error:', error));
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.data === "profileUpdated") {
+      // Hide the iframe
+      const iframeContainer = document.getElementById(
+        "update-profile-container"
+      );
+      if (iframeContainer) {
+        iframeContainer.style.display = "none";
+
+        // Show completion message to the user
+        alert("Profile updated successfully!");
+
+        // Initiate checkProfileCompletion() after a slight delay
+        setTimeout(() => {
+        }, 500); // Adjust the delay time as needed
+        openPopup();
+      }
+    }
+  });
+
+// Function to create Razorpay order
+function createRazorpayOrder() {
+    closePopup();
+    const amount = document.getElementById('topup_amount').value;
+
+    fetch('/topuppayment/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify({
+          topup_amount: amount
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message === 'RZP Order generated successfully') {
+            // Initialize Razorpay payment
+            var options = {
+                "key": data.key,
+                "amount": data.amount,
+                "currency": "INR",
+                "name": data.user.name,
+                "description": "Order Payment",
+                "order_id": data.order_id,
+                "handler": function (response){
+                    updatePaymentStatus(response);
+                },
+                "prefill": {
+                    "name": data.user.name,
+                    "email": data.user.email,
+                    "contact": data.user.contact
+                }
+            };
+            var rzp1 = new Razorpay(options);
+            rzp1.open();
+        } else {
+            console.error('Failed to create Razorpay order');
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+// Function to update payment status
+function updatePaymentStatus(response) {
+    fetch('/payment/update-status/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify({
+            order_id: response.razorpay_order_id,
+            payment_id: response.razorpay_payment_id,
+            signature: response.razorpay_signature,
+            status: 'paid'
+        })
+    })
+    .then(response => {
+        if (response.status === 200) {
+            // Call the function to store cart data
+            storeCartData()
+                .then(() => closePopup())
+                .then(() => {
+                    alert("Congratulations! Your Payment was made Successfully.");
+                    window.location.href = 'user_dashboard/';
+                })
+                .catch(error => console.error('Failed to store cart data:', error));
+        } else {
+            console.error('Failed to update payment status');
+        }
+    })
+    .catch(error => console.error('Error:', error));
+}
+
+function storeCartData() {
+    const cartItems = JSON.parse('[]');
+    const promoCode = localStorage.getItem('promo_code') || '';
+    const totalAmount = parseFloat(localStorage.getItem('total_amount') || 0);
+    const discount = parseFloat(localStorage.getItem('discount') || 0);
+    const grandTotal = parseFloat(localStorage.getItem('grand_total') || 0);
+
+    // Assuming you have the top-up amount available as a variable
+    const topupAmount = parseFloat(document.getElementById('topup_amount').value);
+    const finaltopupAmount = parseFloat(document.getElementById('total_balance').innerText);
+    const topup_promocode = document.getElementById('promocode').value;
+    const currentdiscount = parseFloat(document.getElementById('creditbalance').innerText)
+
+    // Adding the top-up amount to the total and grand total
+    const updatedTotalAmount = totalAmount + topupAmount;
+    const updatedPromoCode = topup_promocode;
+    const updatedGrandTotal = grandTotal + finaltopupAmount;
+    const updatedDiscount = discount + currentdiscount;
+
+    return fetch('/save_cart_data/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify({
+            cart_items: cartItems,
+            promo_code: updatedPromoCode,
+            total_amount: updatedTotalAmount,
+            discount: updatedDiscount,
+            grand_total: updatedGrandTotal
+        })
+    })
+    .then(response => {
+        if (response.status === 201) {
+            console.log('Cart data stored successfully');
+            return response.json();
+        } else {
+            throw new Error('Failed to store cart data');
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        throw error;
+    });
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+
+
+function closePopup() {
+    document.getElementById('topUpPopup').style.display = 'none';
+}
+
+function openPopup() {
+    document.getElementById('topUpPopup').style.display = 'block';
+}
+
+function validateTopupAmount() {
+    const topup_amount = document.getElementById("topup_amount").value;
+    const payButton = document.getElementById("pay-button");
+    if (topup_amount === "") {
+        payButton.disabled = true;
+    } else {
+        payButton.disabled = false;
+    }
+}
+
+function toUpperCaseInput(input) {
+    input.value = input.value.toUpperCase();
+}
+
+</script>
+<style>
+  .container {
+    padding: 15px;
+    margin-top: 5rem;
+    width: 50rem;
+    background-color: white;
+    max-height: 60vh;
+    margin-bottom: 5rem;
+  }
+  .top-right-corner {
+      position: absolute;
+      top: 60px; /* Adjust as needed */
+      right: 10px; /* Adjust as needed */
+  }
+  th, td {
+    width:20rem; 
+  }
+  .modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.8);
+    padding-top: 60px;
+  }
+  .modal-content {
+    background-color: #fefefe;
+    margin: 5% auto;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid #888;
+    width: 80%;
+    max-height: 60vh;
+    overflow-y: auto;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+    max-width: 300px;
+    position: relative;
+    animation: fadeIn 0.5s;
+    
+  }
+  .close {
+    color: black;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    width: 4rem;
+    cursor: pointer;
+    position: relative;
+    
+  }
+  .close:hover,
+  .close:focus {
+    color: black;
+    text-decoration: none;
+  }
+  @keyframes fadeIn {
+    from {opacity: 0;}
+    to {opacity: 1;}
+  }
+  .modal-content h2 {
+    margin-top: 0;
+    color: #333;
+  }
+  .modal-content h3 {
+    margin-top: 20px;
+    color: #555;
+  }
+  .modal-content ul {
+    list-style-type: none;
+    padding: 0;
+  }
+  .modal-content ul li {
+    background: #f9f9f9;
+    margin: 5px 0;
+    padding: 10px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+  }
+  .modal-content ul li:nth-child(even) {
+    background: #f1f1f1;
+  }
+  .modal-content ul li span {
+    display: block;
+    font-size: 14px;
+    color: #666;
+  }
+  .modal-content ul li strong {
+    display: block;
+    font-size: 16px;
+    color: #333;
+  }
+
+  /* New styles for popup */
+  .top-up-popup {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    overflow: auto;
+    padding-top: 60px;
+  }
+
+  .top-up-popup-content {
+    background-color: #fefefe;
+    margin: 5% auto;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 300px;
+    position: relative;
+    animation: fadeIn 0.5s;
+  }
+
+  .top-up-popup-content h2 {
+    margin-top: 0;
+    color: #333;
+  }
+
+  .top-up-popup-content label {
+    display: block;
+    margin-top: 10px;
+  }
+
+  .top-up-popup-content input {
+    width: 100%;
+    padding: 8px;
+    margin-top: 5px;
+    margin-bottom: 10px;
+    box-sizing: border-box;
+  }
+
+  .top-up-popup-content button {
+    width: 100%;
+    padding: 10px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+    border-radius: 5px;
+  }
+
+  .top-up-popup-content button:hover {
+    background-color: #45a049;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  .container { padding: 15px; margin-top: 5rem; background-color: aliceblue; }
+    #update-profile-container {
+        display: none;
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        z-index: 999;
+        width: 80%;
+        max-width: 400px;
+        height: 80%;
+        max-height: 460px;
+        background-color: white;
+        box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+        border-radius: 8px;
+        padding: 10px;
+    }
+    #update-profile-iframe { width: 100%; height: 100%; border: none; }
+</style>
+
+<div class="top-right-corner">
+  <a class="btn btn-light mt-3 text-center" href="{% url 'user_dashboard' %}">DASHBOARD</a>
+  <button class="btn btn-success mt-3 text-center" onclick="openPopup()">TOP-UP</button>
+</div>
+
+<div id="topUpPopup" class="top-up-popup">
+  <div class="top-up-popup-content">
+    <span class="close" onclick="closePopup()">&times;</span>
+    <h2>Top Up Amount</h2>
+    <label for="topup_amount">Enter amount to top up :</label>
+    <input type="number" id="topup_amount" class="form-control" placeholder="Enter amount" oninput="applyPromocode(); validateTopupAmount();" required />
+    <label for="topup_promocode">Add Promocode :</label>
+    <input type="text" id="promocode" class="form-control" placeholder="PROMOCODE" oninput="toUpperCaseInput(this); applyPromocode();" />
+    <label>Credit Balance : +<span id="creditbalance"> 0</span></label>
+    <label>Total Balance  : <span id="total_balance"> 0</span></label>
+    <button id="pay-button" class="btn btn-dark mt-3" disabled>Proceed to Top Up</button>
+  </div>
+</div>
+
+
+<div class="row">
+  <div class="modal-content col-sm-3">
+    <h2>Service Rates</h2>
+    {% for service in services %}
+      <h3>{{ service.service_name }}</h3>
+      <ul>
+        {% for rate in service.rates %}
+          <li>Quantity: {{ rate.min_quantity }} - {{ rate.max_quantity }}, Rate: {{ rate.rate }}</li>
+        {% endfor %}
+      </ul>
+    {% endfor %}
+  </div>
+
+
+<div class="container mt-10 col-sm-9">
+  <h1 class="text-center mb-4">Estimator</h1>
+  <div class="table-responsive">
+    <table class="table table-bordered">
+      <thead class="table-dark">
+        <tr>
+          <th>Service Name</th>
+          <th>Quantity</th>
+          <th>Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for service in services %}
+        <tr>
+          <td>{{ service.service_name }}</td>
+          <td>
+            <input
+              type="number"
+              class="form-control"
+              id="quantity_{{ service.id }}"
+              oninput="calculateAmount('{{ service.id }}', '{{ service.rates_json|escapejs }}')"
+            />
+          </td>
+          <td id="amount_{{ service.id }}">0</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2" class="text-end"><strong>Total Amount:</strong></td>
+          <td id="total_amount">0</td>
+        </tr>
+        <tr>
+          <td colspan="3" class="text-center">
+            <button class="btn btn-dark mt-3 text-center" onclick="addToCart()">Add to Cart</button>
+          </td>
+        </tr>
+      </tfoot>
+    </table>
+    
+  </div>
+</div>
+</div>
+<span id="update-profile-container" style="display: none">
+  <iframe
+    id="update-profile-iframe"
+    src="{% url 'update_profile' %}"
+    width="100%"
+    height="100%"
+    frameborder="0"
+  ></iframe>
+</span>
+{% endblock %}
