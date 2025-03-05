@@ -14,6 +14,7 @@ from .models.reportingarea_info import ReportingAreaDetails
 from .models.timeavailability_info import AvailabilityDetails
 from .models.ratelist import RateList
 from .models.CallbackForm import Callback
+from .models.PromoCode import PromoCode
 
 class ServiceRateInline(admin.TabularInline):
     model = ServiceRate
@@ -58,3 +59,4 @@ admin.site.register(ReportingAreaDetails)
 admin.site.register(AvailabilityDetails)
 admin.site.register(Callback)
 admin.site.register(RateList)
+admin.site.register(PromoCode)

@@ -87,4 +87,7 @@ urlpatterns = [
     path('send_confirmation_mail/<int:user_id>/', views.send_confirmation_mail, name='send_confirmation_mail'),
 
     #################################### End of Multiform URL's #####################################
+    path('apply-promo-code', views.apply_promo_code, name='apply_promo_code'),   # for Promo-Code
+    path('download-invoice/<int:order_id>/', views.download_invoice, name='download_invoice'), # for single invoice
+    path("generate_order/", views.generate_cart_order, name="generate_cart_order"),
 ]

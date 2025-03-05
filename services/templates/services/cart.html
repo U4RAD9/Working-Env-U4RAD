@@ -54,6 +54,7 @@
         </tr>
       </thead>
       <tbody>
+
         {% for service in services %}
         <tr>
           <td>{{ service.service_name }}</td>
@@ -181,6 +182,7 @@
       headers: {
         "Content-Type": "application/json",
         "X-CSRFToken": "{{ csrf_token }}",
+        'Cache-Control': 'no-cache, no-store, must-revalidate', 
       },
       body: JSON.stringify(cartData),
     })
@@ -192,6 +194,9 @@
       })
       .then((data) => {
         console.log("Cart data saved:", data);
+        if (data.cart) {
+          updateCartUI(data.cart); // Ensure this function updates the frontend state
+        }
         return data;
       })
       .catch((error) => {
@@ -223,6 +228,7 @@
       if (status == "Success") {
         saveCartData(cartData);
         alert("Your payment was made successfully!");
+        console.log("completion")
         window.location.href = "{% url 'user_dashboard' %}";
       } else {
         alert(`${response.error.description}, ${response.error.reason}`);
@@ -230,119 +236,81 @@
     });
   }
 
-  function checkout() {
-    console.log("Proceed to Pay button clicked");
 
-    const cartItems = [];
+function checkout() {
+  console.log("Proceed to Pay button clicked");
 
-    document.querySelectorAll(".cart-quantity").forEach((input) => {
-      const serviceName = input
-        .closest("tr")
-        .querySelector("td:first-child").innerText;
+  const cartItems = [];
+  document.querySelectorAll(".cart-quantity").forEach(input => {
+      const serviceName = input.closest("tr").querySelector("td:first-child").innerText;
       const quantity = parseInt(input.value, 10);
 
-      try {
-        const amount = parseFloat(
-          input.closest("tr").querySelector("td:last-child").innerText
-        );
-
-        if (quantity > 0) {
+      if (quantity > 0) {
           cartItems.push({
-            service_name: serviceName,
-            quantity: quantity,
-            amount: amount,
+              service_name: serviceName,
+              quantity: quantity,
+              amount: parseFloat(input.closest("tr").querySelector("td:last-child").innerText),
           });
-        }
-      } catch (error) {
-        console.error("Error parsing rate data:", error);
       }
-    });
+  });
 
-    const promoCode = document.getElementById("promo_code").value;
-    const totalAmount = parseFloat(
-      document.getElementById("total_amount").innerText
-    );
-    const presentdiscount = parseFloat(localStorage.getItem('discount') || 0);
-    const discount = parseFloat(document.getElementById("discount").innerText);
-    const grandTotal = parseFloat(
-      document.getElementById("grand_total").innerText
-    );
-    const updateddiscount = discount + presentdiscount;
+  const promoCode = document.getElementById("promo_code").value;
+  const totalAmount = parseFloat(document.getElementById("total_amount").innerText) || 0;
+  const discount = parseFloat(document.getElementById("discount").innerText) || 0;
+  const grandTotal = totalAmount - discount;
 
-    const cartData = {
+  const cartData = {
       cart_items: cartItems,
       promo_code: promoCode,
       total_amount: totalAmount,
-      discount: presentdiscount,
-      grand_total: grandTotal,
-    };
+      discount: discount,
+      grand_total: grandTotal
+  };
 
-    console.log("Data to be sent to the server:", cartData);
-    checkProfileCompletion()
-      .then((profileComplete) => {
-        if (profileComplete) {
-          console.log("Profile is complete. Proceeding to save cart data.");
-        } else {
-          console.log(
-            "Profile is not complete. Showing update profile iframe."
-          );
-          document.getElementById("update-profile-container").style.display =
-            "block";
-          throw new Error("Profile not complete");
-        }
-      })
-      .then((savedCart) => {
-        console.log(
-          "Cart data saved successfully. Redirecting to payment success."
-        );
-        fetch(generateRazorpayOrderUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-CSRFToken": "{{ csrf_token }}",
+  console.log("Data to be sent to the server:", cartData);
+  console.log(discount);
+  fetch("{% url 'generate_cart_order' %}", {
+      method: "POST",
+      headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": "{{ csrf_token }}",
+      },
+      body: JSON.stringify(cartData),
+  })
+  .then(response => response.json())
+  .then(data => {
+      if (data.error) {
+          alert(data.error);
+          return;
+      }
+
+      var options = {
+          key: data.key,
+          amount: data.amount,
+          currency: "INR",
+          name: "U4RAD",
+          description: "Payment for services",
+          order_id: data.order_id,
+          handler: function (response) {
+              updatePaymentStatus(response, "Success", cartData);
           },
-          body: JSON.stringify(cartData),
-        })
-          .then((response) => {
-            if (!response.ok) {
-              throw new Error("Network response was not ok");
-            }
-            return response.json();
-          })
-          .then((data) => {
-            console.log("order id:", data);
-            var options = {
-              key: data.key, // Enter the Key ID generated from the Dashboard
-              amount: data.amount, // Amount is in currency subunits. Default currency is INR. Hence, 50000 refers to 50000 paise
-              currency: "INR",
-              name: "U4RAD", //your business name
-              description: "Payment for services",
-              image: "https://example.com/your_logo",
-              order_id: data.order_id, //This is a sample Order ID. Pass the `id` obtained in the response of Step 1
-              handler: function (response) {
-                updatePaymentStatus(response, "Success", cartData);
-              },
-              prefill: data.user,
-              notes: {
-                address: "U4RAD Office",
-              },
-              theme: {
-                color: "#3399cc",
-              },
-            };
-            var rzp1 = new Razorpay(options);
-            rzp1.on("payment.failed", function (response) {
-              updatePaymentStatus(response, "Failure", null);
-            });
-            rzp1.open();
-          })
-          .catch((error) => {
-            console.error("Error generating order!:", error);
-            throw error;
-          });
-      })
-      .catch((error) => console.error("Checkout process failed:", error));
-  }
+          prefill: data.user,
+          notes: { address: "U4RAD Office" },
+          theme: { color: "#3399cc" }
+      };
+
+      var rzp1 = new Razorpay(options);
+      rzp1.on("payment.failed", function (response) {
+          updatePaymentStatus(response, "Failure", null);
+      });
+      rzp1.open();
+  })
+  .catch(error => {
+      console.error("Error generating order:", error);
+      alert("An error occurred while processing your request.");
+  });
+}
+
 
   function calculateAmount(serviceId, rateData) {
     const quantityInput = document.getElementById(`quantity_${serviceId}`);
@@ -403,27 +371,32 @@
 
   function applyPromoCode() {
     const promoCodeInput = document.getElementById("promo_code");
-    const promoCode = promoCodeInput.value;
-    let discount = 0;
-    const totalAmount = parseFloat(document.getElementById("total_amount").innerText);
-    
-    if (isNaN(totalAmount)) {
-        document.getElementById("grand_total").innerText = "Invalid total amount";
-        return;
-    }
-    
-    if (promoCode === "XRAI10") {
-        discount = totalAmount * 0.1;
-        promoCodeInput.style.color = "green";
-    } else {
-        promoCodeInput.style.color = "red";
-    }
-    
-    const grandTotal = totalAmount - discount;
-    document.getElementById("discount").innerText = `${discount}`;
-    document.getElementById("grand_total").innerText = `${grandTotal}`;
-    validateProceedButton(grandTotal);
+    const promoCode = promoCodeInput.value.trim();
+    const totalAmount = parseFloat(document.getElementById("total_amount").innerText) || 0;
+
+    fetch("{% url 'apply_promo_code' %}", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": "{{ csrf_token }}",
+        },
+        body: JSON.stringify({ promo_code: promoCode, total_amount: totalAmount }),
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.valid) {
+            document.getElementById("discount").innerText = data.discount.toFixed(2);
+            const grandTotal = totalAmount - data.discount;
+            console.log("Grand Total:apply_promo_code1", grandTotal);
+            document.getElementById("grand_total").innerText = grandTotal.toFixed(2);
+        } else {
+            document.getElementById("discount").innerText = "0";
+            document.getElementById("grand_total").innerText = totalAmount.toFixed(2);
+        }
+    })
+    .catch(error => console.error("Error applying promo code:", error));
 }
+
 
 function validateProceedButton(grandTotal) {
     const proceedButton = document.querySelector(".btn-dark");

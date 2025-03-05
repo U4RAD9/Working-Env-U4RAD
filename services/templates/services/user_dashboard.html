@@ -176,6 +176,7 @@
           <th>Status</th>
           <th>Payment ID</th>
           <th>Signature ID</th>
+          <th>Download</th>
         </tr>
       </thead>
       <tbody>
@@ -188,6 +189,11 @@
               <td>{{ order.status }}</td>
               <td>{{ order.payment_id }}</td>
               <td>{{ order.signature_id }}</td>
+              <td>
+                <a href="{% url 'download_invoice' order.id %}" class="btn btn-sm btn-success">
+                  Download Invoice
+                </a>
+              </td>  <!--change 22-02-2025-->
             </tr>
           {% endfor %}
         {% else %}
@@ -197,8 +203,9 @@
         {% endif %}
       </tbody>
     </table>
+    
 
-    <button class="btn btn-success" onclick="window.location.href='{% url 'download_invoice' %}'">Download Invoice</button>
+    {% comment %} <button class="btn btn-success" onclick="window.location.href='{% url 'download_invoice' %}'">Download Invoice</button> {% endcomment %}
   </div>
 </div>
 

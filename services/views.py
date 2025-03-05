@@ -1,5 +1,6 @@
 import os
 from django.shortcuts import render, get_object_or_404, redirect
+from django.views.decorators.cache import never_cache
 from .models.models import Service, ServiceRate
 from .models.profile import Profile, UploadFile
 from .models.CartItem import Cart
@@ -12,6 +13,7 @@ from django.contrib.auth.models import User
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
+from django.views.decorators.http import require_POST
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import logout as ContribLogout
 import json
@@ -32,6 +34,9 @@ import openpyxl
 from io import BytesIO
 from django.views.decorators.http import require_POST
 from datetime import timedelta
+from services.models import PromoCode
+from django.db.models import F
+from django.db import transaction
 
 ################################# imports for the multiform ########################################
 #-----------------------------------------Himanshu-------------------------------------------------#
@@ -77,10 +82,21 @@ from django.utils import timezone
 from django.core.files.storage import default_storage
 import zipfile
 import re
+from .models.PromoCode import PromoCode
+import json
+from io import BytesIO
+from reportlab.pdfgen import canvas
+from django.template.loader import render_to_string
+from xhtml2pdf import pisa
+from django.core.exceptions import ObjectDoesNotExist
+from decimal import Decimal
+
 ################################ End of Multiform Imports ##########################################
 
 def login(request):
     if request.method == 'POST':
+        logout(request)  # Clear old session
+        request.session.flush()  # Force clear user session
         identifier = request.POST['identifier']
         password = request.POST.get('password')
         new_password = request.POST.get('new_password')
@@ -135,6 +151,43 @@ def login(request):
                 else:
                     return render(request, 'services/login.html', {'error': 'Please provide a new password to create an account'})
     return render(request, 'services/login.html')
+
+
+#######################--------------shyam---------------------############
+
+#######################------promocode-------------##################
+
+@csrf_exempt
+@require_POST
+def apply_promo_code(request):
+    try:
+        data = json.loads(request.body)
+        promo_code = data.get('promo_code')
+        total_amount = float(data.get('total_amount', 0))
+
+        if not promo_code:
+            return JsonResponse({'error': 'Promo code is required.'}, status=400)
+
+        try:
+            code_obj = PromoCode.objects.get(code=promo_code.upper())
+        except PromoCode.DoesNotExist:
+            return JsonResponse({'valid': False, 'message': 'Invalid promo code.'}, status=404)
+
+        if not code_obj.is_valid():
+            return JsonResponse({'valid': False, 'message': 'Promo code has expired or is inactive.'}, status=400)
+
+        discount = round((total_amount * float(code_obj.discount_percentage)) / 100, 2)
+        grand_total = round(total_amount - discount, 2)
+
+        return JsonResponse({
+            'valid': True,
+            'discount': discount,
+            'grand_total': grand_total,
+            'message': f"{code_obj.discount_percentage}% discount applied."
+        })
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
 
 #------------------------------------------------------------
 
@@ -196,31 +249,112 @@ def update_payment_status(request):
         return HttpResponse(status=200)
 
 
-@csrf_protect
-def generate_order(request):
-    if request.method == "POST":
-        data = json.loads(request.body)
-        profile = Profile.objects.get(user=request.user)
-        # Initialize Razorpay client
-        client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
-        
-        # Create Razorpay order
-        try:
-            razorpay_order = client.order.create(
-                {"amount": int(data['grand_total']) * 100, "currency": "INR", "payment_capture": "1"}
-            )
-        except razorpay.errors.BadRequestError as e:
-            return render(request, "services/error.html", {"error": "Failed to create Razorpay order. Authentication failed."})
+#################################--------------SHYAM-----------------######################################
 
+#########-------generate_cart_order------->Generate Order-------------------############
+
+def generate_order(amount, profile, user,cart_items):
+    client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+
+    order_data = {
+        "amount": amount *100,  # Amount should be in paise (1 INR = 100 paise)
+        "currency": "INR",
+        "payment_capture": 1,  # Auto-capture payment
+    }
+    print(order_data)
+
+    try:
+        print("Using Razorpay Key ID:", settings.RAZORPAY_KEY_ID)
+        order = client.order.create(order_data)
         # Create Order in your database
         order = Order.objects.create(
-            name=profile.organization, amount=data['grand_total'], provider_order_id=razorpay_order["id"], user=request.user
+            name=profile, amount=amount, provider_order_id=order["id"], user=user
         )
         order.save()
+        return order
+    except razorpay.errors.BadRequestError as e:
+        print(f"Razorpay Authentication Error: {str(e)}")
+        return None
+    except razorpay.errors.ServerError as e:
+        print(f"Razorpay Server Error: {str(e)}")
+        return None
+    
 
-        return JsonResponse({'message': 'RZP Order generated successfully', 'order_id': order.provider_order_id, 'amount': int(data['grand_total']) * 100, 'key': settings.RAZORPAY_KEY_ID, 'user': { 'name': profile.organization, 'email': profile.email, 'contact': profile.user.username }})
+# @csrf_exempt
+# def razorpay_webhook(request):
+#     try:
+#         data = json.loads(request.body)
 
-    return render(request, "services/payment.html")
+#         if "razorpay_order_id" in data and "razorpay_payment_id" in data and "razorpay_signature" in data:
+#             client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
+            
+#             # ✅ Verify payment signature
+#             params_dict = {
+#                 "razorpay_order_id": data["razorpay_order_id"],
+#                 "razorpay_payment_id": data["razorpay_payment_id"],
+#                 "razorpay_signature": data["razorpay_signature"]
+#             }
+
+#             try:
+#                 client.utility.verify_payment_signature(params_dict)
+#                 print("Payment signature verified")
+
+#                 order = Order.objects.get(provider_order_id=data["razorpay_order_id"])
+#                 order.status = PaymentStatus.PAID  # ✅ Mark as paid
+#                 order.payment_id = data["razorpay_payment_id"]  # ✅ Store payment ID
+#                 order.signature_id = data["razorpay_signature"]  # ✅ Store signature
+#                 order.save()
+#                 print(f"Order marked as paid: {order}")
+                
+                
+#                 with transaction.atomic():
+#                     cart_value, created = CartValue.objects.get_or_create(user=order.user)
+#                     print(f"🔍 Before Update: Grand Total = {cart_value.grand_total}, Paid Amount = {cart_value.paid_amount}")
+
+#                     # Reduce the grand total by the paid amount
+#                     cart_value.grand_total -= Decimal(order.amount)
+#                     cart_value.grand_total = max(cart_value.grand_total, 0)  # Prevent negative values
+#                     cart_value.paid_amount += Decimal(order.amount)
+#                     cart_value.payment_status = "Completed"
+#                     cart_value.save()
+
+#                     # ✅ Force database refresh
+#                     cart_value.refresh_from_db()
+
+#                 print(f"✅ After Update: Grand Total = {cart_value.grand_total}, Paid Amount = {cart_value.paid_amount}")
+                
+                
+
+                
+
+#                 # ✅ Move items from Cart to OrderHistory
+#                 cart_items = Cart.objects.filter(user=order.user)
+#                 for item in cart_items:
+#                     OrderHistory.objects.create(
+#                         user=order.user,
+#                         service_name=item.service.service_name,
+#                         quantity=item.quantity,
+#                         amount=item.amount,
+#                     )
+
+#                 # ✅ Clear the cart after successful payment
+#                 cart_items.delete()
+#                 print("Cart cleared after successful payment")
+
+#                 return JsonResponse({"message": "Payment Successful, Order Updated, and Cart Cleared"})
+
+#             except razorpay.errors.SignatureVerificationError:
+#                 return JsonResponse({"error": "Invalid payment signature"}, status=400)
+
+#         return JsonResponse({"error": "Invalid payment data"}, status=400)
+
+#     except json.JSONDecodeError:
+#         return JsonResponse({"error": "Invalid JSON received"}, status=400)
+#     except Order.DoesNotExist:
+#         return JsonResponse({"error": "Order not found"}, status=404)
+    
+    
+############################################ END OF SHYAM###########################################################################    
 
 @csrf_protect
 def generate_topup_order(request):
@@ -264,74 +398,45 @@ def user_dashboard(request):
         return redirect('login')  # Redirect to login page if user is not authenticated
     
 
+# for all Dowload invoice Pdf
+def download_all_invoices(request):
+    # Create a BytesIO buffer to hold the PDF
+    buffer = BytesIO()
+    p = canvas.Canvas(buffer)
 
-# def download_invoice(request):
-#     if not request.user.is_authenticated:
-#         return redirect('login')
+    # Fetch all orders for the logged-in user
+    orders = Order.objects.filter(user=request.user)
 
-#     # Get the last order for the current user
-#     last_order = Order.objects.filter(user=request.user).order_by('-order_date').first()
+    y = 800  # Starting Y position
 
-#     if not last_order:
-#         return HttpResponse("No orders found.", content_type='text/plain')
+    for order in orders:
+        p.drawString(100, y, f"Order ID: {order.id} | Name: {order.name} | Amount: ₹{order.amount} | Status: {order.status}")
+        y -= 20
 
-#     # Calculate the time window for filtering order histories (±5 minutes)
-#     time_window_start = last_order.order_date - timedelta(minutes=5)
-#     time_window_end = last_order.order_date + timedelta(minutes=5)
+        # Add a page break if content goes beyond the page
+        if y <= 50:
+            p.showPage()
+            y = 800
 
-#     # Get all order histories for the user within the time window
-#     last_order_histories = OrderHistory.objects.filter(
-#         user=request.user,
-#         order_date__range=(time_window_start, time_window_end)
-#     )
+    p.save()
+    buffer.seek(0)
 
-#     workbook = openpyxl.Workbook()
-#     sheet = workbook.active
-#     sheet.title = "Invoice"
+    # Return PDF as a downloadable response
+    return FileResponse(buffer, as_attachment=True, filename='all_invoices.pdf')
 
-#     # Add order histories to the sheet
-#     if last_order_histories.exists():
-#         sheet['A1'] = 'Order History'
-#         sheet.append(['Service Name', 'Quantity', 'Amount'])
-#         for history in last_order_histories:
-#             service_name = history.service_name
-#             quantity = history.quantity
-#             amount = history.amount
-#             sheet.append([service_name, quantity, amount])
 
-#     sheet.append([])  # Empty row
 
-#     # Add the last order details to the sheet
-#     if last_order:
-#         sheet.append(['Order'])
-#         sheet.append(['Order ID', 'Customer Name', 'Amount', 'Status', 'Payment ID', 'Signature ID'])
-#         provider_order_id = last_order.provider_order_id
-#         name = last_order.name
-#         amount = last_order.amount
-#         status = last_order.status
-#         payment_id = last_order.payment_id
-#         signature_id = last_order.signature_id
-#         sheet.append([provider_order_id, name, amount, status, payment_id, signature_id])
-
-#     # Save the workbook to a BytesIO object
-#     response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-#     response['Content-Disposition'] = 'attachment; filename=invoice.xlsx'
-#     buffer = BytesIO()
-#     workbook.save(buffer)
-#     buffer.seek(0)
-#     response.write(buffer.read())
-#     return response
-
-def download_invoice(request):
+def download_invoice(request, order_id):
     if not request.user.is_authenticated:
         return redirect('login')
-
+    
     # Get the last order for the current user
-    last_order = Order.objects.filter(user=request.user).order_by('-order_date').first()
+    # last_order = Order.objects.filter(user=request.user).order_by('-order_date').first()
 
+    last_order = Order.objects.filter(id=order_id, user=request.user).first()
     if not last_order:
-        return HttpResponse("No orders found.", content_type='text/plain')
-
+        return HttpResponse("Order not found.", content_type='text/plain')
+    
     # Calculate the time window for filtering order histories (±5 minutes)
     time_window_start = last_order.order_date - timedelta(minutes=5)
     time_window_end = last_order.order_date + timedelta(minutes=5)
@@ -862,47 +967,65 @@ def download_latest_file(request, user_id):
         return JsonResponse({'error': 'No file found for this profile.'}, status=400)
         
 ########################################### 26-06 ###############################################
+@never_cache
 @login_required
 def save_cart_data(request):
     if request.method == "POST":
         try:
             data = json.loads(request.body)
             print("Received Data:", data)
-            user = request.user
+            # user = request.user
+            user = User.objects.get(id=request.user.id)  
+            print(f"🚀 [DEBUG] Logged-in User: {user.id} - {user.username}")
+            print("User:", user)
             cart_items = data.get('cart_items', [])
             promo_code = data.get('promo_code', '')
             total_amount = data.get('total_amount', 0)
             discount = data.get('discount', 0)
             grand_total = data.get('grand_total', 0)
 
-            # Fetch the latest cart value for the user, if it exists
-            cart_value, created = CartValue.objects.get_or_create(user=user)
+            with transaction.atomic():
+                # Fetch the latest cart value for the user
+                cart_value = CartValue.objects.filter(user=user).order_by('-id').first()
 
-            if not created:
-                # Add the values to the existing ones
-                cart_value.total_amount += total_amount
-                cart_value.discount += discount
-                cart_value.grand_total += grand_total
-            else:
-                # If it's a new CartValue instance, set the values
-                cart_value.total_amount = total_amount
-                cart_value.discount = discount
-                cart_value.grand_total = grand_total
-            cart_value.promo_code = promo_code
-            cart_value.save()
+                if cart_value:
+                    # Update existing cart values
+                    cart_value.refresh_from_db()
+                    cart_value.total_amount += total_amount
+                    cart_value.discount += discount
+                    cart_value.grand_total += grand_total
+                    cart_value.promo_code = promo_code
+                    cart_value.save()
+                    print(f"[LOG] Existing CartValue Updated (ID: {cart_value.id}) -> Grand Total: {cart_value.grand_total}")
+                else:
+                    # Create a new cart if no previous cart exists
+                    cart_value = CartValue.objects.create(
+                        user=user,
+                        total_amount=total_amount,
+                        discount=discount,
+                        grand_total=grand_total,
+                        promo_code=promo_code
+                    )
 
             print(f"Cart Value Updated: {cart_value}")
+            print(cart_value.grand_total)
+
+            # print(f"Cart Value Updated: {cart_value}")
 
             # Process each cart item only if there are items in the cart
             if cart_items:
                 for item in cart_items:
+                    print(item)
                     quantity = item.get('quantity')
                     amount = item.get('amount')
                     service_name = item.get('service_name')
 
-                    # Ensure all required fields are present
-                    if not all([quantity, amount, service_name]):
-                        return JsonResponse({'error': 'Missing fields in cart item'}, status=400)
+                    print(f"Checking Cart Item: {item}")
+                    
+                        # Ensure all required fields are present and not empty/None
+                    if quantity is None or amount is None or not service_name:
+                        print("🚨 Missing or invalid fields in cart item:", item)
+                        return JsonResponse({'error': f'Missing fields in cart item: {item}'}, status=400)
 
                     try:
                         # Retrieve the Service instance using service_name
@@ -917,6 +1040,7 @@ def save_cart_data(request):
                         quantity=quantity,
                         amount=amount
                     )
+                    print("Order History Saved")
 
                     # Check if a cart with the same user and service already exists
                     cart_instance, created = Cart.objects.get_or_create(user=user, service=service)
@@ -935,10 +1059,12 @@ def save_cart_data(request):
 
              # Call the checkUserInCart function after saving cart data
             checkUserInCart(user)
+            print("save_cart_data")
 
             return JsonResponse({'message': 'Cart data saved successfully', 'cart': cart_value.pk}, status=201)
         except Exception as e:
-            print(f"Error: {str(e)}")
+            print("Exception: error in save_cart_data")
+            print(f"Error : {str(e)}")
             return JsonResponse({'error': str(e)}, status=500)
 
     return JsonResponse({'error': 'Invalid request method'}, status=400)
@@ -1113,7 +1239,8 @@ def service_create(request):
     if request.method == 'POST':
         form = ServiceForm(request.POST)
         if form.is_valid():
-            service = form.save(commit=False)
+            service = fo
+            rm.save(commit=False)
             service.added_by = request.user
             service.modified_by = request.user
             service.save()
@@ -1997,6 +2124,8 @@ def update_messages(request):
             return JsonResponse({'status': 'error', 'message': 'Data not found'})
     return JsonResponse({'status': 'error', 'message': 'Invalid request method'})
 
+
+
 # This is the view to generate the pdf of the responses.
 
 # def generate_response_pdf(request, pk):
@@ -2570,4 +2699,131 @@ def send_confirmation_mail(request, user_id):
         }
 
     return JsonResponse(response_data)
+
+
+
+###################################################################################
+
+#---------------------------------------SHYAM--------------------------------------#
+# Ensure Grand Total is Calculated on the Backend
+
+def validate_promo_code(promo_code, total_amount):
+    try:
+        promo = PromoCode.objects.get(code=promo_code, active=True)  # Use 'active' instead of 'is_active'
+        discount = promo.discount_percentage
+        return min(discount, total_amount)  # Ensure discount does not exceed total amount
+    except PromoCode.DoesNotExist:
+        return 0  # No discount if the promo code is invalid
+    
+import logging
+logger = logging.getLogger(__name__)
+
+
+@csrf_exempt
+def generate_cart_order(request):
+    if request.method == "POST":
+        data = json.loads(request.body)
+        payment_order_id = data.get("order_id")
+        profile = Profile.objects.get(user=request.user)
+
+        # Recalculate the total amount on the server
+        total_amount = Decimal(0)
+        cart_items = []  
+
+        for item in data["cart_items"]:
+            try:
+                service = Service.objects.get(service_name=item["service_name"])
+                rate_data = list(service.rates.values('min_quantity', 'max_quantity', 'rate'))
+
+                quantity = item["quantity"]
+                valid_rate = next((r["rate"] for r in rate_data if r["min_quantity"] <= quantity <= r["max_quantity"]), None)
+
+                if valid_rate:
+                    item_total = quantity * Decimal(valid_rate)
+                    total_amount += item_total
+
+                    cart_items.append({
+                        "service": service,
+                        "quantity": quantity,
+                        "amount": item_total
+                    })
+                else:
+                    return JsonResponse({"error": f"Invalid quantity or rate for {item['service_name']}"}, status=400)
+            except ObjectDoesNotExist:
+                return JsonResponse({"error": f"Service '{item['service_name']}' not found"}, status=400)
+
+        # Apply promo code discount
+        discount = validate_promo_code(data.get("promo_code"), total_amount)
+        discount = discount * total_amount / 100
+        print("Discount:", discount)
+
+        grand_total = total_amount - discount
+        grand_total_int = int(grand_total)  # Razorpay requires amount in paise
+        
+        # Generate Razorpay order
+        order = generate_order(grand_total_int, profile.organization, request.user, cart_items)
+
+        if order:
+            # Update or create CartValue
+            # cart_entry = CartValue.objects.filter(user=request.user).first()
+    
+            # if cart_entry:
+            #     print(f"Existing CartValue ID: {cart_entry.id}, Grand Total: {cart_entry.grand_total}")
+            #     cart_entry.total_amount += total_amount
+            #     cart_entry.discount += discount
+            #     cart_entry.grand_total += grand_total  # Add previous + new payment
+            #     cart_entry.save()
+            #     print(f"✅ Updated CartValue: {cart_entry.total_amount}, Grand Total: {cart_entry.grand_total}")
+            # else:
+            #     cart_value = CartValue.objects.create(
+            #         user=request.user,
+            #         promo_code=data.get("promo_code"),
+            #         total_amount=total_amount,
+            #         discount=discount,
+            #         grand_total=grand_total
+            #     )
+    
+            # for item in cart_items:
+            #     cart_entry = Cart.objects.filter(user=request.user, service=item["service"]).first()
+            
+            #     if cart_entry:
+            #         cart_entry.quantity = F("quantity") + item["quantity"]
+            #         cart_entry.amount = F("amount") + item["amount"]
+            #         cart_entry.save()
+            #     else:
+            #         Cart.objects.create(
+            #             user=request.user,
+            #             service=item["service"],
+            #             quantity=item["quantity"],
+            #             amount=item["amount"]
+            #         )
+    
+            # for item in cart_items:
+            #     OrderHistory.objects.create(
+            #         user=request.user,
+            #         service_name=item["service"].service_name,  
+            #         quantity=item["quantity"],
+            #         amount=item["amount"], 
+            #     )
+            return JsonResponse({
+               "message": "Order created successfully",
+                "order_id": order.provider_order_id,
+                "amount": grand_total_int,
+                "key": settings.RAZORPAY_KEY_ID,
+                "user": {
+                     "name": profile.organization,
+                     "email": profile.email,
+                     "contact": profile.user.username
+                }
+            })
+        else:
+            return JsonResponse({"error": "Failed to create order"}, status=500)
+
+    return render(request, "services/payment.html")
+
+
+
+######################------------END OF SHYAM------------######################
+
+
 
